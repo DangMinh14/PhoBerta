@@ -1,0 +1,7 @@
+datasets
+transformers==4.30.1
+torch==2.1.0
+accelerate
+Pyvi
+nltk
+https://gitlab.com/trungtv/vi_spacy/-/raw/master/vi_core_news_lg/dist/vi_core_news_lg-0.0.1.tar.gz
