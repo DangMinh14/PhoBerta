@@ -1,6 +1,10 @@
 import streamlit as st
 
-st.title('My first app')
+# Tiêu đề của ứng dụng
+st.title('Hiển thị hình ảnh từ URL')
 
-x = st.slider('Select a value')
-st.write(x, 'squared is', x * x)
+# URL hình ảnh mẫu
+image_url = "https://upload.wikimedia.org/wikipedia/commons/4/47/PNG_transparency_demonstration_1.png"
+
+# Hiển thị hình ảnh
+st.image(image_url, caption='Hình ảnh từ URL', use_column_width=True)
