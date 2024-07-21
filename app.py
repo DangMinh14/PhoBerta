@@ -1,23 +1,116 @@
-# import streamlit as st
-# import torch
-
-# # Tiêu đề của ứng dụng
-# st.title('Hiển thị hình ảnh từ URL')
-
-# # URL hình ảnh mẫu
-# image_url = "https://upload.wikimedia.org/wikipedia/commons/4/47/PNG_transparency_demonstration_1.png"
-
-# # Hiển thị hình ảnh
-# st.image(image_url, caption='Hình ảnh từ URL', use_column_width=True)
-
 import streamlit as st
 import torch
-from transformers import AutoModelForSequenceClassification, AutoTokenizer, pipeline
-import spacy
+from transformers import AutoTokenizer, AutoModelForSequenceClassification, pipeline
+import nltk
+from transformers.models.roberta.modeling_roberta import *
+from transformers import RobertaForQuestionAnswering
+from nltk import word_tokenize
 import json
 import pandas as pd
 import re
-from transformers.models.roberta.modeling_roberta import *
+import base64
+# Set the background image
+# background_image = """
+# <style>
+# [data-testid="stAppViewContainer"] > .main {
+#     background-image: url("https://images.unsplash.com/photo-1542281286-9e0a16bb7366");
+#     background-size: 100vw 100vh;  # This sets the size to cover 100% of the viewport width and height
+#     background-position: center;  
+#     background-repeat: no-repeat;
+# }
+# </style>
+# """
+
+# st.markdown(background_image, unsafe_allow_html=True)
+
+def set_bg_hack(main_bg):
+    '''
+    A function to unpack an image from root folder and set as bg.
+ 
+    Returns
+    -------
+    The background.
+    '''
+    # set bg name
+    main_bg_ext = "png"
+        
+    st.markdown(
+         f"""
+         <style>
+         .stApp {{
+             background: url(data:image/{main_bg_ext};base64,{base64.b64encode(open(main_bg, "rb").read()).decode()});
+             background-size: cover
+         }}
+         </style>
+         """,
+         unsafe_allow_html=True
+     )
+set_bg_hack("Background.png")
+
+image_url = "logo1.png"
+
+# Hiển thị hình ảnh mà không có caption và điều chỉnh kích thước nhỏ lại
+st.image(image_url, width=100)
+
+# Download punkt for nltk
+nltk.download('punkt')
+
+# Load PhoBert model and tokenizer
+phoBert_model = AutoModelForSequenceClassification.from_pretrained('minhdang14902/PhoBert_Edu')
+phoBert_tokenizer = AutoTokenizer.from_pretrained('minhdang14902/PhoBert_Edu')
+chatbot_pipeline = pipeline("sentiment-analysis", model=phoBert_model, tokenizer=phoBert_tokenizer)
+
+# Load spaCy Vietnamese model
+# nlp = spacy.load('vi_core_news_lg')
+
+# Load intents from json file
+def load_json_file(filename):
+    with open(filename) as f:
+        file = json.load(f)
+    return file
+
+filename = './QA_Legal_converted_merged.json'
+intents = load_json_file(filename)
+
+def create_df():
+    df = pd.DataFrame({
+        'Pattern': [],
+        'Tag': []
+    })
+    return df
+
+df = create_df()
+
+def extract_json_info(json_file, df):
+    for intent in json_file['intents']:
+        for pattern in intent['patterns']:
+            sentence_tag = [pattern, intent['tag']]
+            df.loc[len(df.index)] = sentence_tag
+    return df
+
+df = extract_json_info(intents, df)
+df2 = df.copy()
+
+labels = df2['Tag'].unique().tolist()
+labels = [s.strip() for s in labels]
+num_labels = len(labels)
+id2label = {id: label for id, label in enumerate(labels)}
+label2id = {label: id for id, label in enumerate(labels)}
+
+# def tokenize_with_spacy(text):
+#     doc = nlp(text)
+#     tokens = [token.text for token in doc]
+#     tokenized_text = ' '.join(tokens)
+#     tokenized_text = re.sub(r'(?<!\s)([.,?])', r' \1', tokenized_text)
+#     tokenized_text = re.sub(r'([.,?])(?!\s)', r'\1 ', tokenized_text)
+#     return tokenized_text
+
+# Load Roberta model and tokenizer
+
+_CHECKPOINT_FOR_DOC = "roberta-base"
+_CONFIG_FOR_DOC = "RobertaConfig"
+_TOKENIZER_FOR_DOC = "RobertaTokenizer"
+
 
 class MRCQuestionAnswering(RobertaPreTrainedModel):
     config_class = RobertaConfig
@@ -60,7 +153,7 @@ class MRCQuestionAnswering(RobertaPreTrainedModel):
         outputs = self.roberta(
             input_ids,
             attention_mask=attention_mask,
-            token_type_ids=None,
+            token_type_ids=None,  # Roberta doesn't use token_type_ids
             position_ids=position_ids,
             head_mask=head_mask,
             inputs_embeds=inputs_embeds,
@@ -118,9 +211,38 @@ class MRCQuestionAnswering(RobertaPreTrainedModel):
             attentions=outputs.attentions,
         )
 
-from nltk import word_tokenize
-from transformers.models.auto import MODEL_FOR_QUESTION_ANSWERING_MAPPING
+roberta_model_checkpoint = "minhdang14902/Roberta_edu"
+roberta_tokenizer = AutoTokenizer.from_pretrained(roberta_model_checkpoint)
+roberta_model = MRCQuestionAnswering.from_pretrained(roberta_model_checkpoint)
 
+def chatRoberta(text):
+    label = label2id[chatbot_pipeline(text)[0]['label']]
+    response = intents['intents'][label]['responses']
+
+    QA_input = {
+        'question': text,
+        'context': response[0]
+    }
+
+    # Tokenize input
+    encoded_input = tokenize_function(QA_input, roberta_tokenizer)
+
+    # Prepare batch samples
+    batch_samples = data_collator([encoded_input], roberta_tokenizer)
+
+    # Model prediction
+    roberta_model.eval()
+    with torch.no_grad():
+        inputs = {
+            'input_ids': batch_samples['input_ids'],
+            'attention_mask': batch_samples['attention_mask'],
+            'words_lengths': batch_samples['words_lengths'],
+        }
+        outputs = roberta_model(**inputs)
+
+    # Extract answer
+    result = extract_answer([encoded_input], outputs, roberta_tokenizer)
+    return result
 
 def tokenize_function(example, tokenizer):
     question_word = word_tokenize(example["question"])
@@ -129,8 +251,7 @@ def tokenize_function(example, tokenizer):
     question_sub_words_ids = [tokenizer.convert_tokens_to_ids(tokenizer.tokenize(w)) for w in question_word]
     context_sub_words_ids = [tokenizer.convert_tokens_to_ids(tokenizer.tokenize(w)) for w in context_word]
     valid = True
-    if len([j for i in question_sub_words_ids + context_sub_words_ids for j in
-            i]) > tokenizer.model_max_length - 1:
+    if len([j for i in question_sub_words_ids + context_sub_words_ids for j in i]) > tokenizer.model_max_length - 1:
         valid = False
 
     question_sub_words_ids = [[tokenizer.bos_token_id]] + question_sub_words_ids + [[tokenizer.eos_token_id]]
@@ -147,6 +268,7 @@ def tokenize_function(example, tokenizer):
         "words_lengths": words_lengths,
         "valid": valid
     }
+
 def data_collator(samples, tokenizer):
     if len(samples) == 0:
         return {}
@@ -207,118 +329,13 @@ def extract_answer(inputs, outputs, tokenizer):
         })
     return plain_result
 
-# Load mô hình Phobert
-model_checkpoint = "minhdang14902/Roberta_edu"
-tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
-model = MRCQuestionAnswering.from_pretrained(model_checkpoint)
+st.title("Chatbot Interface")
+st.write("Hi! I am your virtual assistant. Feel free to ask, and I'll do my best to provide you with answers and assistance.")
+text = st.text_input("User: ")
 
-# Load mô hình Roberta
-from transformers import AutoModelForSequenceClassification
-model_sentiment = AutoModelForSequenceClassification.from_pretrained('minhdang14902/PhoBert_Edu')
-tokenizer_sentiment = AutoTokenizer.from_pretrained('minhdang14902/PhoBert_Edu')
-chatbot_sentiment = pipeline("sentiment-analysis", model=model_sentiment, tokenizer=tokenizer_sentiment)
-
-import spacy
-import json
-# Khởi tạo mô hình spaCy tiếng Việt
-nlp = spacy.load('vi_core_news_lg')
-import pandas as pd
-
-def load_json_file(filename):
-    with open(filename) as f:
-        file = json.load(f)
-    return file
-
-filename = './data/QA_Legal_converted_merged.json'
-intents = load_json_file(filename)
-
-def create_df():
-    df = pd.DataFrame({
-        'Pattern' : [],
-        'Tag' : []
-    })
-    return df
-
-df = create_df()
-
-def extract_json_info(json_file, df):
-    for intent in json_file['intents']:
-        for pattern in intent['patterns']:
-            sentence_tag = [pattern, intent['tag']]
-            df.loc[len(df.index)] = sentence_tag
-    return df
-
-df = extract_json_info(intents, df)
-df2 = df.copy()
-
-labels = df2['Tag'].unique().tolist()
-labels = [s.strip() for s in labels]
-num_labels = len(labels)
-id2label = {i: label for i, label in enumerate(labels)}
-label2id = {v: k for k, v in id2label.items()}
-
-def preprocess(text, df):
-    def remove_numbers_and_special_chars(text):
-        text = re.sub(r'\d+', '', text)
-        text = re.sub(r'[^\w\s]', '', text)
-        text = re.sub(r'\s+', ' ', text).strip()
-        return text
-
-    text = text.lower()
-    text = remove_numbers_and_special_chars(text)
-    text_nlp = nlp(text)
-    filtered_sentence = [token.text for token in text_nlp if not token.is_stop]
-    text = ' '.join(filtered_sentence)
-
-    return text
-
-def predict(text):
-    new_text = preprocess(text, df2)
-    probs = chatbot_sentiment(new_text)
-    predicted_label = max(probs, key=lambda x: x['score'])['label']
-    return predicted_label
-
-# Thiết lập giao diện người dùng bằng Streamlit
-st.title("Vietnamese Legal Q&A Chatbot")
-st.write("Nhập câu hỏi của bạn về các vấn đề pháp lý:")
-
-user_question = st.text_input("Câu hỏi:")
-
-if st.button("Gửi câu hỏi"):
-    if user_question:
-        st.write("Câu hỏi của bạn:", user_question)
-
-        # Tìm câu trả lời từ tập dữ liệu intents
-        found_intent = None
-        for intent in intents['intents']:
-            if user_question.lower() in [pattern.lower() for pattern in intent['patterns']]:
-                found_intent = intent
-                break
-
-        if found_intent:
-            answer = found_intent['responses'][0]
-            st.write("Câu trả lời:", answer)
-        else:
-            result = predict(user_question)
-            if result:
-                st.write("Thẻ dự đoán:", result)
-
-            # Tạo đầu vào cho mô hình QA
-            qa_inputs = [{
-                'context': found_intent['responses'][0] if found_intent else 'Tôi không có thông tin phù hợp.',
-                'question': user_question
-            }]
-
-            qa_features = []
-            for qa_input in qa_inputs:
-                feature = tokenize_function(qa_input, tokenizer)
-                if feature["valid"]:
-                    qa_features.append(feature)
-
-            qa_batch = data_collator(qa_features, tokenizer)
-            with torch.no_grad():
-                outputs = model(**qa_batch)
-
-            answers = extract_answer(qa_features, outputs, tokenizer)
-            best_answer = max(answers, key=lambda x: (x['score_start'] + x['score_end']) / 2)
-            st.write("Câu trả lời:", best_answer['answer'])
+if st.button("Submit"):
+    if text:
+        result = chatRoberta(text)
+        st.write(f"Chatbot: {result[0]['answer']}")
+    else:
+        st.write("Please enter a message.")
